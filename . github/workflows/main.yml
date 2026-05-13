@@ -1,0 +1,38 @@
+name: Instagram Bot CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build-and-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Verify installation
+        run: |
+          python -c "from telegram.ext import Application; print('python-telegram-bot OK')"
+          python -c "from instagrapi import Client; print('instagrapi OK')"
+          python -c "from PIL import Image; print('Pillow OK')"
+
+      - name: Run bot.py (6 hours)
+        run: |
+          timeout 21600 python bot.py || true
