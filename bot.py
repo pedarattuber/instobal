@@ -1,22 +1,29 @@
 import logging
 import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, ConversationHandler, filters
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    ConversationHandler,
+    filters,
+)
 from instagrapi import Client
-from instagrapi.exceptions import LoginRequired
 
 # --------------------- تنظیمات ---------------------
 TOKEN = "1747414200:ijR7oyeA3Iae0c-Pv70-Izf5o9tUdPdntgI"  # ← توکن ربات بله را جایگزین کنید
-BALE_BASE_URL = "https://tapi.bale.ai/bot"  # پایگاه API پیام‌رسان بله
+BALE_BASE_URL = "https://tapi.bale.ai/bot"           # پایگاه API اصلی
+BALE_BASE_FILE_URL = "https://tapi.bale.ai/file/bot" # پایگاه دانلود فایل
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# مراحل مکالمه
 LOGIN_STATE, MAIN_MENU, AWAITING_INPUT = range(3)
 
-user_data = {}  # ذخیره موقت اطلاعات کاربران
-
+# ساختار جدید: user_data[user_id] = {'manager': InstagramManager, 'pending': None}
+user_data = {}
 
 # --------------------- کلاس مدیریت اینستاگرام ---------------------
 class InstagramManager:
@@ -61,7 +68,7 @@ class InstagramManager:
     def upload_photo(self, photo_path, caption=""):
         try:
             media = self.cl.photo_upload(photo_path, caption)
-            return media.code  # کد پست (shortcode)
+            return media.code
         except:
             return None
 
@@ -95,16 +102,15 @@ class InstagramManager:
             return None
 
     def download_media(self, media_pk):
-        """دانلود فایل اصلی یک پست (عکس/ویدئو) و بازگشت بایت‌ها و نوع"""
         try:
             info = self.cl.media_info(media_pk)
-            if info.media_type == 1:  # عکس
+            if info.media_type == 1:
                 data = self.cl.photo_download(media_pk)
                 return data, 'photo', info.thumbnail_url if hasattr(info, 'thumbnail_url') else None
-            elif info.media_type == 2:  # ویدئو
+            elif info.media_type == 2:
                 data = self.cl.video_download(media_pk)
                 return data, 'video', None
-            elif info.media_type == 8:  # carousel (اولین آیتم)
+            elif info.media_type == 8:
                 if info.resources:
                     first = info.resources[0]
                     if first.media_type == 1:
@@ -196,7 +202,6 @@ class InstagramManager:
         except:
             return None, None
 
-
 # --------------------- کیبوردها ---------------------
 def start_keyboard():
     return InlineKeyboardMarkup([
@@ -221,8 +226,7 @@ def main_menu_keyboard():
         [InlineKeyboardButton("🚪 خروج", callback_data="logout")]
     ])
 
-
-# --------------------- هندلرهای ربات ---------------------
+# --------------------- هندلرها ---------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(
         "👋 به ربات مدیریت اینستاگرام خوش آمدید!\nیک روش ورود را انتخاب کنید:",
@@ -258,7 +262,7 @@ async def handle_login_message(update: Update, context: ContextTypes.DEFAULT_TYP
         session_path = f"{user_id}_session.json"
         await file.download_to_drive(session_path)
         if insta.login_with_session(session_path):
-            user_data[user_id] = insta
+            user_data[user_id] = {'manager': insta, 'pending': None}  # ذخیره به‌عنوان دیکشنری
             await update.message.reply_text("✅ ورود موفق!")
             return await show_main_menu(update)
         else:
@@ -268,8 +272,8 @@ async def handle_login_message(update: Update, context: ContextTypes.DEFAULT_TYP
     elif ":" in update.message.text:
         username, password = update.message.text.split(":", 1)
         if insta.login_with_credentials(username.strip(), password.strip()):
-            user_data[user_id] = insta
-            await update.message.delete()  # حذف پیام حاوی رمز
+            user_data[user_id] = {'manager': insta, 'pending': None}  # ذخیره به‌عنوان دیکشنری
+            await update.message.delete()
             await update.message.reply_text("✅ ورود موفق!")
             return await show_main_menu(update)
         else:
@@ -287,15 +291,15 @@ async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
-    insta = user_data.get(user_id)
+    user_entry = user_data.get(user_id)
 
-    if not insta:
+    if not user_entry or 'manager' not in user_entry:
         await query.edit_message_text("⚠️ لطفاً ابتدا وارد شوید: /start")
         return ConversationHandler.END
 
+    insta = user_entry['manager']
     action = query.data
 
-    # عملیات بدون نیاز به ورودی
     if action == "my_profile":
         profile = insta.get_profile_info(insta.cl.username)
         if profile:
@@ -338,41 +342,38 @@ async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await query.edit_message_text("👋 از حساب خارج شدید. /start")
         return ConversationHandler.END
 
-    # عملیات نیازمند ورودی (نام کاربری، لینک و ...)
-    user_data[user_id]['pending'] = action  # ذخیره نوع عملیات
-    prompt = ""
-    if action == "user_info":
-        prompt = "🔍 نام کاربری اینستاگرام را وارد کنید:"
-    elif action == "upload_photo":
-        prompt = "📸 عکس خود را به همراه کپشن در کپشن (اختیاری) ارسال کنید.\n" \
-                 "می‌توانید ابتدا عکس را ارسال کنید و سپس کپشن را در پیام جداگانه بفرستید."
-    elif action == "like_post":
-        prompt = "❤️ لینک پست اینستاگرام را ارسال کنید:"
-    elif action == "follow_user":
-        prompt = "➕ نام کاربری برای فالو را وارد کنید:"
-    elif action == "unfollow_user":
-        prompt = "➖ نام کاربری برای آنفالو را وارد کنید:"
-    elif action == "story_user":
-        prompt = "👥 نام کاربری برای مشاهده استوری‌هایش را وارد کنید:"
-    elif action == "reels_user":
-        prompt = "👤 نام کاربری برای مشاهده ریلزهایش را وارد کنید:"
-    elif action == "view_post":
-        prompt = "🔗 لینک پست اینستاگرام را برای دانلود ارسال کنید:"
-
-    await query.edit_message_text(prompt)
+    # عملیات نیازمند ورودی — ذخیره pending در دیکشنری
+    user_entry['pending'] = action
+    prompts = {
+        "user_info": "🔍 نام کاربری اینستاگرام را وارد کنید:",
+        "upload_photo": "📸 عکس خود را به همراه کپشن (اختیاری) ارسال کنید.\n"
+                        "می‌توانید ابتدا عکس را بفرستید و سپس کپشن را جداگانه ارسال کنید.",
+        "like_post": "❤️ لینک پست اینستاگرام را ارسال کنید:",
+        "follow_user": "➕ نام کاربری برای فالو را وارد کنید:",
+        "unfollow_user": "➖ نام کاربری برای آنفالو را وارد کنید:",
+        "story_user": "👥 نام کاربری برای مشاهده استوری‌هایش را وارد کنید:",
+        "reels_user": "👤 نام کاربری برای مشاهده ریلزهایش را وارد کنید:",
+        "view_post": "🔗 لینک پست اینستاگرام را برای دانلود ارسال کنید:"
+    }
+    await query.edit_message_text(prompts[action])
     return AWAITING_INPUT
 
 async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
-    insta = user_data.get(user_id)
-    if not insta or 'pending' not in user_data.get(user_id, {}):
-        await update.message.reply_text("خطا. لطفاً /start را بزنید.")
+    user_entry = user_data.get(user_id)
+
+    if not user_entry or 'manager' not in user_entry:
+        await update.message.reply_text("خطا. /start را بزنید.")
         return ConversationHandler.END
 
-    pending = user_data[user_id]['pending']
-    del user_data[user_id]['pending']  # یکبار مصرف
+    insta = user_entry['manager']
+    pending = user_entry.pop('pending', None)  # برداشتن pending برای جلوگیری از تکرار
 
-    # ----- پردازش ورودی‌های متنی -----
+    if not pending:
+        await update.message.reply_text("⚠️ دستور نامشخص. از منو استفاده کنید.")
+        return await show_main_menu(update)
+
+    # ----- ورودی متنی (بدون عکس) -----
     if update.message.text and not update.message.photo:
         text = update.message.text.strip()
 
@@ -440,7 +441,7 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
                     await update.message.reply_text("❌ دانلود ممکن نشد.")
             return await show_main_menu(update)
 
-    # ----- پردازش عکس (آپلود) -----
+    # ----- آپلود عکس -----
     if update.message.photo and pending == "upload_photo":
         file = await update.message.photo[-1].get_file()
         photo_path = f"temp_{user_id}.jpg"
@@ -454,14 +455,18 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             await update.message.reply_text("❌ آپلود ناموفق.")
         return await show_main_menu(update)
 
-    # اگر به هر دلیلی اینجا رسیدیم
     await update.message.reply_text("⚠️ دستور نامشخص.")
     return await show_main_menu(update)
 
-
 # --------------------- اجرای ربات ---------------------
 def main():
-    application = Application.builder().token(TOKEN).base_url(BALE_BASE_URL).build()
+    application = (
+        Application.builder()
+        .token(TOKEN)
+        .base_url(BALE_BASE_URL)
+        .base_file_url(BALE_BASE_FILE_URL)  # تنظیم آدرس دانلود فایل برای بله
+        .build()
+    )
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
